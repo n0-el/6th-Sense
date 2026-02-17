@@ -21,8 +21,7 @@ wheels/
 *.egg
 
 # Virtual Environment
-venv/
-env/
+
 ENV/
 
 # IDE
@@ -67,3 +66,23 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+*.pyc
+venv/
+.env
+# Python
+__pycache__/
+*.pyc
+
+# Videos
+*.mp4
+data/test_videos/
+data/outputs/
+
+# Models
+models/*.pt
+
+# Docker
+*.log
+
+# Mac
+.DS_Store
