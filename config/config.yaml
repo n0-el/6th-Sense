@@ -1,0 +1,174 @@
+# Smart Motorcycle Helmet Blind Spot Detection System
+# Configuration File
+
+system:
+  name: "BlindSpot-AI"
+  version: "1.0.0"
+  device: "jetson_nano" # Options: jetson_nano, jetson_xavier, raspberry_pi, cpu
+
+camera:
+  source: 0 # Camera index (0 for default, or path to video file)
+  width: 1280
+  height: 720
+  fps: 30
+  backend: "v4l2" # Options: v4l2, gstreamer, opencv
+
+  # Camera calibration (update with your camera)
+  focal_length: 800 # pixels
+  sensor_width: 6.0 # mm
+
+stabilization:
+  enabled: false # Set to true if you want video stabilization (adds 8-10ms latency)
+  method: "optical_flow" # Options: optical_flow, homography, imu_fusion
+  max_features: 200
+  smoothing_window: 5
+
+  imu:
+    enabled: false # Set to true if IMU is connected
+    port: "/dev/ttyUSB0"
+    baudrate: 115200
+
+detection:
+  model_path: "models/yolov8n.pt" # Will be converted to TensorRT
+  engine_path: "models/yolov8n.engine" # TensorRT engine (created on first run)
+
+  # Model settings
+  input_size: [640, 640] # [width, height]
+  confidence_threshold: 0.4
+  iou_threshold: 0.45
+
+  # Classes to detect (COCO dataset)
+  classes:
+    - car # class_id: 2
+    - motorcycle # class_id: 3
+    - bus # class_id: 5
+    - truck # class_id: 7
+
+  # Performance optimization
+  frame_skip: 2 # Process every Nth frame (1 = no skip)
+  use_tensorrt: true # Use TensorRT optimization (Jetson only)
+  use_fp16: true # Use FP16 precision for speed
+
+  # ROI (Region of Interest) - focus on rear and sides
+  roi:
+    rear_focus: true
+    rear_width_ratio: 0.6 # Center 60% for rear
+    side_zones: true
+    side_height_ratio: 0.4 # Middle 40% for sides
+
+tracking:
+  method: "bytetrack" # Options: bytetrack, sort, deepsort
+
+  # ByteTrack settings
+  track_thresh: 0.5
+  track_buffer: 30 # frames
+  match_thresh: 0.8
+
+  # History settings
+  max_history_frames: 30 # 1 second at 30 FPS
+  min_track_length: 5 # Minimum frames before alerting
+
+danger_estimation:
+  # Vehicle dimensions (for distance estimation)
+  avg_vehicle_width: 1.8 # meters
+  avg_vehicle_height: 1.5 # meters
+
+  # Time-to-Collision thresholds
+  ttc_safe: 5.0 # seconds
+  ttc_warning: 3.0 # seconds
+  ttc_critical: 1.5 # seconds
+
+  # Motion thresholds
+  min_growth_rate: 0.05 # Minimum bbox growth to consider
+  min_flow_magnitude: 2.0 # pixels/frame
+
+  # Special handling for motorcycles
+  motorcycle_ttc_multiplier: 0.8 # More sensitive for bikes
+
+decision_engine:
+  # Temporal smoothing
+  smoothing_window: 3 # frames
+  consistency_threshold: 2 # Alert if present in 2/3 frames
+
+  # Alert cooldown
+  cooldown_duration: 2.0 # seconds
+
+  # False positive suppression
+  suppress_traffic_jam: false
+  traffic_jam_threshold: 5 # Number of slow vehicles
+
+  suppress_parked: true
+  parked_duration: 1.0 # seconds of no movement
+
+  suppress_lateral: true
+  lateral_threshold: 1.5 # Lateral/forward motion ratio
+
+audio_alerts:
+  enabled: true
+  sample_rate: 44100
+
+  # Alert frequencies (Hz)
+  safe_freq: 1000
+  warning_freq: 1500
+  critical_freq: 2000
+
+  # Alert patterns
+  safe:
+    enabled: false
+  warning:
+    duration: 0.2 # seconds
+    repetitions: 2
+    interval: 0.15 # seconds between beeps
+  critical:
+    duration: 0.3
+    repetitions: 3
+    interval: 0.1
+
+  # Spatial audio (stereo panning)
+  spatial:
+    left_gain: [1.0, 0.3] # [left_channel, right_channel]
+    right_gain: [0.3, 1.0]
+    center_gain: [0.8, 0.8]
+
+visualization:
+  enabled: true # Show debug window (disable for production)
+  show_fps: true
+  show_detections: true
+  show_tracks: true
+  show_danger_zones: true
+  show_roi: true
+
+  # Colors (BGR format)
+  colors:
+    safe: [0, 255, 0] # Green
+    warning: [0, 255, 255] # Yellow
+    critical: [0, 0, 255] # Red
+    roi: [255, 0, 255] # Magenta
+
+logging:
+  enabled: true
+  level: "INFO" # Options: DEBUG, INFO, WARNING, ERROR
+  log_file: "data/outputs/system.log"
+
+  # Data logging for analysis
+  save_events: true
+  event_log: "data/outputs/events.json"
+
+  # Performance metrics
+  save_metrics: true
+  metrics_file: "data/outputs/metrics.csv"
+
+performance:
+  # Target metrics
+  target_fps: 15 # Minimum FPS
+  max_latency_ms: 100 # Maximum end-to-end latency
+
+  # Monitoring
+  show_performance: true
+  performance_window: 30 # frames to average
+
+testing:
+  # Test mode settings
+  test_video_path: "data/test_videos/sample.mp4"
+  save_output_video: true
+  output_video_path: "data/outputs/output.mp4"

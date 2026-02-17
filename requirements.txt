@@ -1,0 +1,35 @@
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+scipy>=1.7.0
+
+# Deep Learning
+torch>=1.10.0
+torchvision>=0.11.0
+ultralytics>=8.0.0  # YOLOv8
+
+# Audio
+sounddevice>=0.4.5
+soundfile>=0.11.0
+
+# Tracking
+filterpy>=1.4.5  # For Kalman filter in ByteTrack
+
+# Utilities
+PyYAML>=6.0
+tqdm>=4.62.0
+matplotlib>=3.4.0
+pillow>=8.3.0
+
+# Optional: For Jetson/GPU acceleration
+# tensorrt>=8.0.0  # Install separately on Jetson
+# pycuda>=2021.1  # Install separately on Jetson
+
+# Optional: IMU support
+# pyserial>=3.5  # For IMU communication
+# smbus2>=0.4.1  # For I2C IMU
+
+# Development
+pytest>=7.0.0
+black>=22.0.0
+flake8>=4.0.0
