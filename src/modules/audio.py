@@ -1,258 +1,189 @@
 """
-Audio Alert System Module
-Generates spatial audio alerts with escalating urgency
+Audio Alert System — Raspberry Pi Optimised
+============================================
+No scipy dependency. Pure numpy tone generation.
+Directional cues via frequency difference (not just stereo pan):
+  LEFT    → lower tone in left ear
+  RIGHT   → lower tone in right ear
+  CENTER  → equal both ears (tailgate)
+
+CRITICAL → fast triple beep, high frequency
+WARNING  → double beep, medium frequency
 """
 
 import numpy as np
-import sounddevice as sd
-from scipy import signal
-from typing import List, Dict, Tuple
 import threading
 import queue
+import time
+from typing import List, Dict
+
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
+    print("[Audio] WARNING: 'sounddevice' not found. Audio will be disabled.")
 
 
 class AudioAlertSystem:
-    """
-    Spatial audio alert system with directional cues and escalating urgency.
-    Optimized for noisy environments (wind, engine).
-    """
-    
+
     def __init__(self, config: dict):
-        self.config = config
-        self.enabled = config.get('enabled', True)
-        
+        self.config      = config
+        self.enabled     = config.get('enabled', True)
         if not self.enabled:
             return
+
+        self.enabled     = config.get('enabled', True)
+        if not self.enabled:
+            return
+
+        self.has_hardware = (sd is not None)
+        if not self.has_hardware:
+            print("[Audio] ⚠️ 'sounddevice' missing. Running in SIMULATION mode (logs only).")
+
+        self.sample_rate = config.get('sample_rate', 22050)  # lower SR = less CPU
+
+        # Frequencies — kept in 1.5–3 kHz range (cuts through wind/engine noise)
+        self.freq_warning  = config.get('warning_freq',  1800)
+        self.freq_critical = config.get('critical_freq', 2600)
+
+        # Spatial gains per position
+        # Directional: one ear gets the full tone, other ear gets a quieter
+        # and slightly detuned version so rider hears the direction clearly
+        # Spatial gains per position
+        # Directional: one ear gets the full tone, other ear gets a quieter
+        # and slightly detuned version so rider hears the direction clearly
+        raw_spatial = config.get('spatial', {})
         
-        self.sample_rate = config.get('sample_rate', 44100)
-        
-        # Alert frequencies (2-4 kHz for clarity in noise)
-        self.safe_freq = config.get('safe_freq', 1000)
-        self.warning_freq = config.get('warning_freq', 1500)
-        self.critical_freq = config.get('critical_freq', 2000)
-        
-        # Alert patterns
-        self.safe_config = config.get('safe', {})
-        self.warning_config = config.get('warning', {})
-        self.critical_config = config.get('critical', {})
-        
-        # Spatial audio gains
-        self.spatial = config.get('spatial', {})
-        
-        # Audio queue for non-blocking playback
-        self.audio_queue = queue.Queue(maxsize=5)
-        self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
-        self.playback_thread.start()
-        
-        # State
-        self.last_alert_time = {}
-    
+        # Handle "flat" config style (from config.yaml) vs "nested" style (default)
+        if 'center_gain' in raw_spatial:
+             self.spatial = {
+                'left':   {'gain': raw_spatial.get('left_gain',   [1.0, 0.2]), 'detune': -80},
+                'right':  {'gain': raw_spatial.get('right_gain',  [0.2, 1.0]), 'detune':  80},
+                'center': {'gain': raw_spatial.get('center_gain', [0.8, 0.8]), 'detune':   0},
+            }
+        else:
+            # Already nested or empty -> use defaults if empty
+            defaults = {
+                'left':   {'gain': [1.0, 0.2], 'detune': -80},
+                'right':  {'gain': [0.2, 1.0], 'detune':  80},
+                'center': {'gain': [0.8, 0.8], 'detune':   0},
+            }
+            self.spatial = raw_spatial if raw_spatial else defaults
+
+        # Alert cooldown — don't repeat same level within this many seconds
+        self.cooldown     = config.get('alert_cooldown', 2.0)
+        self._last_alert  = 0.0
+
+        # Non-blocking playback queue
+        self._queue  = queue.Queue(maxsize=3)
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    # ──────────────────────────────────────────────────────────────────────────
+
     def handle_alerts(self, alerts: List[Dict]):
         """
-        Process and prioritize multiple alerts.
-        
-        Args:
-            alerts: List of alert dictionaries
+        Called each frame with the current alert list.
+        Plays highest-priority alert only.
         """
         if not self.enabled or not alerts:
             return
-        
-        # Prioritize CRITICAL over WARNING
-        critical_alerts = [a for a in alerts if a['level'] == 'CRITICAL']
-        warning_alerts = [a for a in alerts if a['level'] == 'WARNING']
-        
-        # Play at most 2 alerts to avoid cacophony
-        if critical_alerts:
-            self.generate_alert('CRITICAL', critical_alerts[0]['position'])
-            
-            if len(critical_alerts) > 1:
-                # Multiple critical: Use center alert
-                self.generate_alert('CRITICAL', 'CENTER')
-        elif warning_alerts:
-            self.generate_alert('WARNING', warning_alerts[0]['position'])
-    
+
+        # Cooldown check — avoid beep spam
+        if time.time() - self._last_alert < self.cooldown:
+            return
+
+        critical = [a for a in alerts if a['level'] == 'CRITICAL']
+        warning  = [a for a in alerts if a['level'] == 'WARNING']
+
+        if critical:
+            self.generate_alert('CRITICAL', critical[0]['position'])
+        elif warning:
+            self.generate_alert('WARNING',  warning[0]['position'])
+
     def generate_alert(self, level: str, position: str):
-        """
-        Generate spatial audio alert.
-        
-        Args:
-            level: Alert level ('WARNING' or 'CRITICAL')
-            position: Spatial position ('LEFT', 'RIGHT', 'CENTER')
-        """
+        """Generate and queue a spatial beep alert."""
         if not self.enabled:
             return
+
+        freq  = self.freq_critical if level == 'CRITICAL' else self.freq_warning
+        reps  = 3 if level == 'CRITICAL' else 2
+        dur   = 0.12 if level == 'CRITICAL' else 0.18  # shorter = snappier on Pi
+
+        signal = self._build_alert(freq, dur, reps, position)
         
-        # Get configuration
-        if level == 'CRITICAL':
-            freq = self.critical_freq
-            config = self.critical_config
-        elif level == 'WARNING':
-            freq = self.warning_freq
-            config = self.warning_config
-        else:
-            return  # No alert for SAFE
-        
-        duration = config.get('duration', 0.2)
-        repetitions = config.get('repetitions', 2)
-        interval = config.get('interval', 0.15)
-        
-        # Generate beep
-        beep = self._generate_beep(freq, duration)
-        
-        # Spatialize
-        stereo_beep = self._spatialize(beep, position)
-        
-        # Create alert with repetitions
-        alert_signal = self._create_pattern(stereo_beep, repetitions, interval)
-        
-        # Queue for playback
-        try:
-            self.audio_queue.put_nowait(alert_signal)
-        except queue.Full:
-            pass  # Skip if queue full
-    
-    def _generate_beep(self, freq: float, duration: float) -> np.ndarray:
-        """
-        Generate a beep tone with envelope.
-        
-        Args:
-            freq: Frequency in Hz
-            duration: Duration in seconds
-            
-        Returns:
-            Mono audio signal
-        """
-        t = np.linspace(0, duration, int(self.sample_rate * duration))
-        
-        # Generate sine wave
-        beep = np.sin(2 * np.pi * freq * t)
-        
-        # Apply Hann window for smooth fade in/out
-        envelope = signal.windows.hann(len(beep))
-        beep = beep * envelope
-        
-        # Normalize
-        beep = beep * 0.5  # Reduce volume to prevent distortion
-        
-        return beep
-    
-    def _spatialize(self, mono_signal: np.ndarray, position: str) -> np.ndarray:
-        """
-        Create stereo image with spatial positioning.
-        
-        Args:
-            mono_signal: Mono audio signal
-            position: 'LEFT', 'RIGHT', or 'CENTER'
-            
-        Returns:
-            Stereo signal [N, 2]
-        """
-        # Get gains from config
-        if position == 'LEFT':
-            gains = self.spatial.get('left_gain', [1.0, 0.3])
-        elif position == 'RIGHT':
-            gains = self.spatial.get('right_gain', [0.3, 1.0])
-        else:  # CENTER
-            gains = self.spatial.get('center_gain', [0.8, 0.8])
-        
-        gain_left, gain_right = gains
-        
-        # Apply gains
-        left = mono_signal * gain_left
-        right = mono_signal * gain_right
-        
-        # Stack to stereo
-        stereo = np.column_stack([left, right])
-        
-        return stereo
-    
-    def _create_pattern(self, beep: np.ndarray, repetitions: int,
-                       interval: float) -> np.ndarray:
-        """
-        Create alert pattern with repetitions.
-        
-        Args:
-            beep: Stereo beep signal
-            repetitions: Number of repetitions
-            interval: Interval between beeps in seconds
-            
-        Returns:
-            Complete alert signal
-        """
-        silence = np.zeros((int(self.sample_rate * interval), 2))
-        
-        pattern = []
-        for i in range(repetitions):
-            pattern.append(beep)
-            if i < repetitions - 1:
-                pattern.append(silence)
-        
-        alert_signal = np.vstack(pattern)
-        
-        return alert_signal
-    
-    def _playback_worker(self):
-        """Background thread for audio playback"""
+        print(f"[AUDIO] 🔊 BEEP! ({level} at {position})")
+        self._last_alert = time.time()
+
+        if self.has_hardware:
+            try:
+                self._queue.put_nowait(signal)
+            except queue.Full:
+                print(f"[AUDIO] ⚠️ Audio queue full, skipping alert")
+                pass   # already playing, skip
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _build_alert(self, freq: float, dur: float,
+                     reps: int, position: str) -> np.ndarray:
+        """Build a stereo beep pattern with directional spatial cues."""
+        pos_key  = position.lower()
+        if pos_key not in self.spatial:
+            pos_key = 'center'
+        spatial  = self.spatial[pos_key]
+        gain_l, gain_r = spatial['gain']
+        detune         = spatial['detune']   # Hz offset for non-dominant ear
+
+        n_samples = int(self.sample_rate * dur)
+        t         = np.linspace(0, dur, n_samples, endpoint=False)
+
+        # Dominant ear tone
+        tone_main  = np.sin(2 * np.pi * freq * t)
+        # Non-dominant ear: quieter + slightly detuned (sounds clearly different)
+        tone_side  = np.sin(2 * np.pi * (freq + detune) * t)
+
+        # Simple linear fade in/out envelope (no scipy needed)
+        fade       = int(n_samples * 0.1)
+        envelope   = np.ones(n_samples)
+        envelope[:fade]  = np.linspace(0, 1, fade)
+        envelope[-fade:] = np.linspace(1, 0, fade)
+
+        tone_main  = (tone_main * envelope * 0.7).astype(np.float32)
+        tone_side  = (tone_side * envelope * 0.7).astype(np.float32)
+
+        # Build stereo beep
+        left  = tone_main * gain_l if gain_l >= gain_r else tone_side * gain_l
+        right = tone_main * gain_r if gain_r >= gain_l else tone_side * gain_r
+        beep  = np.column_stack([left, right]).astype(np.float32)
+
+        # Silence gap between beeps
+        gap_samples = int(self.sample_rate * 0.08)
+        gap  = np.zeros((gap_samples, 2), dtype=np.float32)
+
+        parts = []
+        for i in range(reps):
+            parts.append(beep)
+            if i < reps - 1:
+                parts.append(gap)
+
+        return np.vstack(parts)
+
+    def _worker(self):
+        """Background playback thread — blocks until each sound finishes."""
         while True:
             try:
-                # Get next alert from queue
-                alert_signal = self.audio_queue.get()
-                
-                # Play (blocking)
-                sd.play(alert_signal, self.sample_rate)
+                signal = self._queue.get()
+                sd.play(signal, self.sample_rate)
                 sd.wait()
-                
-                self.audio_queue.task_done()
-                
+                self._queue.task_done()
             except Exception as e:
-                print(f"Audio playback error: {e}")
-    
+                print(f"[Audio] Playback error: {e}")
+
     def stop(self):
-        """Stop audio system"""
         self.enabled = False
-        
-        # Clear queue
-        while not self.audio_queue.empty():
+        sd.stop()
+        while not self._queue.empty():
             try:
-                self.audio_queue.get_nowait()
-            except:
+                self._queue.get_nowait()
+            except Exception:
                 pass
-
-
-def test_audio_system():
-    """Test audio alert system"""
-    config = {
-        'enabled': True,
-        'sample_rate': 44100,
-        'critical_freq': 2000,
-        'warning_freq': 1500,
-        'critical': {'duration': 0.3, 'repetitions': 3, 'interval': 0.1},
-        'warning': {'duration': 0.2, 'repetitions': 2, 'interval': 0.15},
-        'spatial': {
-            'left_gain': [1.0, 0.3],
-            'right_gain': [0.3, 1.0],
-            'center_gain': [0.8, 0.8]
-        }
-    }
-    
-    audio = AudioAlertSystem(config)
-    
-    print("Testing LEFT WARNING...")
-    audio.generate_alert('WARNING', 'LEFT')
-    import time
-    time.sleep(1)
-    
-    print("Testing RIGHT CRITICAL...")
-    audio.generate_alert('CRITICAL', 'RIGHT')
-    time.sleep(2)
-    
-    print("Testing CENTER CRITICAL...")
-    audio.generate_alert('CRITICAL', 'CENTER')
-    time.sleep(2)
-    
-    audio.stop()
-    print("Audio test complete!")
-
-
-if __name__ == '__main__':
-    test_audio_system()

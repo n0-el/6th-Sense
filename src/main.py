@@ -17,6 +17,7 @@ from modules.tracking import ByteTracker
 from modules.danger_estimation import DangerEstimator
 from modules.decision import DecisionEngine
 from modules.audio import AudioAlertSystem
+from modules.event_recorder import EventRecorder
 from utils.helpers import FPSTracker, PerformanceMonitor, EventLogger, Visualizer
 
 
@@ -83,8 +84,20 @@ class BlindSpotDetectionSystem:
         print("Initializing audio alert system...")
         self.audio_system = AudioAlertSystem(self.config['audio_alerts'])
 
+        print("Initializing event recorder...")
+        recorder_config = {
+            **self.config.get('event_recorder', {}),
+            'frame_width':  self.config['camera'].get('frame_width',  1280),
+            'frame_height': self.config['camera'].get('frame_height',  720),
+            'record_fps':   self.config['camera'].get('fps', 10),
+        }
+        self.recorder = EventRecorder(recorder_config)
+
     def process_frame(self, frame: np.ndarray) -> dict:
         start_time = time.time()
+
+        # Feed raw frame into recorder's pre-event circular buffer
+        self.recorder.add_frame(frame)
 
         if self.config['stabilization']['enabled']:
             frame = self.stabilizer.stabilize(frame)
@@ -104,6 +117,10 @@ class BlindSpotDetectionSystem:
             danger_levels.append(self.estimator.classify_danger(track))
 
         alerts = self.decision_engine.decide(tracks, danger_levels)
+
+        # Trigger event recording and audio on any alert
+        if alerts:
+            self.recorder.on_alert(alerts, frame)
         self.audio_system.handle_alerts(alerts)
 
         total_latency = (time.time() - start_time) * 1000
@@ -204,12 +221,16 @@ class BlindSpotDetectionSystem:
                             break
 
                 if self.frame_count % 30 == 0:
+                    stats = self.recorder.get_stats()
+                    rec_indicator = " 🔴REC" if stats['recording'] else ""
                     print(
                         f"Frame {self.frame_count:>6d} | "
                         f"FPS: {results['fps']:>5.1f} | "
                         f"Latency: {results['latency_ms']:>5.1f}ms | "
                         f"Tracks: {len(results['tracks']):>2d} | "
-                        f"Alerts: {len(results['alerts']):>2d}"
+                        f"Alerts: {len(results['alerts']):>2d} | "
+                        f"Events: {stats['total_events']:>3d}"
+                        f"{rec_indicator}"
                     )
 
         finally:
@@ -223,6 +244,22 @@ class BlindSpotDetectionSystem:
                 cv2.destroyAllWindows()
 
             self.audio_system.stop()
+            self.recorder.stop()
+
+            stats = self.recorder.get_stats()
+            print(f"\nTotal danger events recorded: {stats['total_events']}")
+            print(f"Event clips saved to: {stats.get('output_dir', 'data/events')}")
+            if stats['event_log']:
+                print("Last events:")
+                for e in stats['event_log']:
+                    file_status = (
+                        f"✅ {e.get('file_size_kb', 0)} KB"
+                        if e.get('file_exists') else "⏳ writing…"
+                    )
+                    print(f"  #{e['id']:04d} | {e['timestamp']} | "
+                          f"{e['level']} {e['position']} | "
+                          f"TTC={e['ttc']} | {e['class']} | "
+                          f"{e['file']} [{file_status}]")
 
             if self.event_logger:
                 self.event_logger.save()

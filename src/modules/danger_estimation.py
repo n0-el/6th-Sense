@@ -23,15 +23,15 @@ from .tracking import Track
 
 # ── Proximity thresholds (bbox_area / frame_area) ─────────────────────────────
 # Rear helmet-cam: a car 5 m behind fills ~6–8% of frame
-_PROX_MONITOR   = 0.03   # in range, start tracking
-_PROX_WARNING   = 0.06   # getting close
-_PROX_CRITICAL  = 0.14   # very close — alert regardless of speed
+_PROX_MONITOR   = 0.01   # ANY visible box → start tracking (was 0.03)
+_PROX_WARNING   = 0.04   # getting close (was 0.06) — earlier warning
+_PROX_CRITICAL  = 0.12   # very close — alert regardless of speed (was 0.14)
 
 # In slow/stopped traffic, only alert at this proximity (basically touching)
-_PROX_SLOW_ALERT = 0.15
+_PROX_SLOW_ALERT = 0.12  # was 0.15 — slightly more sensitive in slow traffic
 
 # ── Growth thresholds ─────────────────────────────────────────────────────────
-_GROWTH_THRESH       = 0.004   # min avg growth rate = approaching
+_GROWTH_THRESH       = 0.002   # was 0.004 — half the old threshold, catches slower approaches
 _SHRINK_THRESH       = -0.002  # negative growth = pulling away → SAFE
 _SMOOTHING_N         = 3       # was 6 — 3 frames is enough at Pi's low FPS
 _ALPHA               = 0.45    # EMA weight for TTC smoothing
@@ -207,9 +207,11 @@ class DangerEstimator:
         # ── Zone: LEFT or RIGHT — Overtake detection ──────────────────────────
         if zone in ('LEFT', 'RIGHT'):
             # Same-direction overtake: grows from behind into side zone
-            # Must be approaching to alert at all
+            # A vehicle simply being in the side zone at monitor proximity
+            # is worth a WARNING — the rider should be aware of it.
             overtake_signal = (recent_growth > self.min_growth_rate or
-                               lateral_flow  > _LATERAL_ENTRY_FLOW)
+                               lateral_flow  > _LATERAL_ENTRY_FLOW or
+                               proximity     >= _PROX_MONITOR)  # ANY visible box
             if not overtake_signal:
                 return 'SAFE'
 
@@ -225,7 +227,8 @@ class DangerEstimator:
                 return 'CRITICAL'
             if ttc <= self.ttc_warning or proximity >= _PROX_WARNING:
                 return 'WARNING'
-            if proximity >= _PROX_MONITOR and recent_growth > self.min_growth_rate:
+            # Even at monitor proximity, flag as WARNING so it's recorded
+            if proximity >= _PROX_MONITOR:
                 return 'WARNING'
             return 'SAFE'
 
@@ -236,6 +239,10 @@ class DangerEstimator:
         if proximity >= _PROX_CRITICAL and is_approaching:
             return 'CRITICAL'
         if ttc <= self.ttc_warning or proximity >= _PROX_WARNING:
+            return 'WARNING'
+        # Any detected vehicle in the centre zone (even far) = WARNING
+        # so it gets recorded and the rider is aware
+        if proximity >= _PROX_MONITOR:
             return 'WARNING'
         return 'SAFE'
 

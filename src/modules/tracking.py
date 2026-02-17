@@ -115,10 +115,10 @@ class ByteTracker:
 
         # ── Tuned defaults ────────────────────────────────────────────────────
         self.track_thresh  = config.get('track_thresh',  0.55)
-        self.track_buffer  = config.get('track_buffer',  3)    # die after 3 missed frames
-        self.match_thresh  = config.get('match_thresh',  0.35)
+        self.track_buffer  = config.get('track_buffer',  2)    # 3FPS: die after 2 missed = ~0.6s
+        self.match_thresh  = config.get('match_thresh',  0.25) # more forgiving at 3FPS (more movement)
         self.min_hits      = config.get('min_hits',      2)
-        self.max_tracks    = config.get('max_tracks',    10)   # Pi can't handle 20
+        self.max_tracks    = config.get('max_tracks',    8)    # Pi: 8 max tracks
 
         self.tracks:   List[Track] = []
         self.next_id:  int         = 0

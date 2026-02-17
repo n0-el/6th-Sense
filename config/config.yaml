@@ -88,7 +88,7 @@ danger_estimation:
 decision_engine:
   # Temporal smoothing
   smoothing_window: 3 # frames
-  consistency_threshold: 2 # Alert if present in 2/3 frames
+  consistency_threshold: 1 # Alert if present in 1/3 frames (Increased SENSITIVITY for testing)
 
   # Alert cooldown
   cooldown_duration: 2.0 # seconds
@@ -97,7 +97,7 @@ decision_engine:
   suppress_traffic_jam: false
   traffic_jam_threshold: 5 # Number of slow vehicles
 
-  suppress_parked: true
+  suppress_parked: false
   parked_duration: 1.0 # seconds of no movement
 
   suppress_lateral: true
@@ -172,3 +172,12 @@ testing:
   test_video_path: "data/test_videos/sample.mp4"
   save_output_video: true
   output_video_path: "data/outputs/output.mp4"
+
+# ── Add this block to your config/config.yaml ────────────────────────────────
+
+event_recorder:
+  enabled: true
+  pre_seconds: 10 # seconds of footage to keep BEFORE the event
+  post_seconds: 10 # seconds to record AFTER the event
+  output_dir: data/events
+  # record_fps and frame dimensions are pulled from camera config automatically

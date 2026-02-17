@@ -36,7 +36,7 @@ class VehicleDetector:
         self.model_path         = config['model_path']
         self.conf_threshold     = config['confidence_threshold']
         self.iou_threshold      = config['iou_threshold']
-        self.frame_skip         = config.get('frame_skip', 4)           # Pi: 1 in 4 frames
+        self.frame_skip         = config.get('frame_skip', 3)           # working framerate
         self.use_cropped_inference = config.get('use_cropped_inference', True)
         self.crop_ratio         = config.get('crop_ratio', 0.55)        # skip top 55% (sky/trees)
 

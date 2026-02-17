@@ -41,7 +41,8 @@ class DecisionEngine:
         # Lateral movement = overtaking vehicle sweeping past — that IS the threat.
 
         # Hysteresis: require N consecutive danger frames before alerting
-        self.required_frames       = config.get('required_danger_frames', 2)
+        # Set to 1 so that even a SINGLE frame with a red box fires an alert.
+        self.required_frames       = config.get('required_danger_frames', 1)
 
         # TTC gate: don't alert if TTC > this AND proximity is also low
         self.max_ttc_for_alert     = config.get('max_ttc_for_alert', 8.0)
@@ -92,6 +93,7 @@ class DecisionEngine:
         # Only suppress if it's been stationary for a long time AND not close.
         # A parked car at the roadside that we're about to pass is fine to ignore.
         if self.suppress_parked and self._is_parked(track) and proximity < self.prox_warning:
+            print(f"[DEBUG] Suppressed PARKED: {track.track_id} (prox={proximity:.3f})")
             return {'alert': False}
 
         # ── Suppress: traffic jam (side zones only) ───────────────────────────
@@ -108,6 +110,7 @@ class DecisionEngine:
                 and self._get_zone(t) in ('LEFT', 'RIGHT')
             ]
             if len(slow_side) >= self.traffic_jam_threshold:
+                print(f"[DEBUG] Suppressed JAM: {track.track_id}")
                 return {'alert': False}
 
         # NOTE: NO lateral suppression — lateral sweep IS the overtake signal.
@@ -122,6 +125,9 @@ class DecisionEngine:
             track.danger_counter = max(0, track.danger_counter - 1)
 
         if track.danger_counter < self.required_frames:
+            # Only print if it WAS dangerous but filtered by hysteresis
+            if danger in ('CRITICAL', 'WARNING'):
+                print(f"[DEBUG] Suppressed HYSTERESIS: {track.track_id} ({track.danger_counter}/{self.required_frames})")
             return {'alert': False}
 
         # ── TTC + proximity gate ──────────────────────────────────────────────
@@ -129,19 +135,26 @@ class DecisionEngine:
         prox_ok = (proximity >= self.prox_warning)
 
         if not ttc_ok and not prox_ok:
+            if danger in ('CRITICAL', 'WARNING'):
+               print(f"[DEBUG] Suppressed GATE: {track.track_id} (TTC={ttc:.1f}, Prox={proximity:.3f})")
             return {'alert': False}
 
         # ── Generate alert ────────────────────────────────────────────────────
         if danger == 'CRITICAL':
+            print(f"[DEBUG] ALERT CRITICAL: {track.track_id}")
             return self._create_alert(track, 'CRITICAL', zone)
 
         if danger == 'WARNING':
             # Overtake (side): alert for WARNING — give the rider time to react
             if zone in ('LEFT', 'RIGHT'):
+                print(f"[DEBUG] ALERT WARNING (Side): {track.track_id}")
                 return self._create_alert(track, 'WARNING', zone)
             # Tailgate (centre): only fire WARNING if TTC is real or very close
             if ttc_ok or proximity >= self.prox_critical:
+                print(f"[DEBUG] ALERT WARNING (Center): {track.track_id}")
                 return self._create_alert(track, 'WARNING', zone)
+            else:
+                 print(f"[DEBUG] Suppressed CENTER WAITING: {track.track_id}")
 
         return {'alert': False}
 
@@ -192,11 +205,15 @@ class DecisionEngine:
                 key = (alert['track_id'], alert['level'])
                 alert_counts[key] = alert_counts.get(key, 0) + 1
 
-        return [
-            alert for alert in self.state_history[-1]
-            if alert_counts.get((alert['track_id'], alert['level']), 0)
-               >= self.consistency_threshold
-        ]
+        consistent = []
+        for alert in self.state_history[-1]:
+            count = alert_counts.get((alert['track_id'], alert['level']), 0)
+            if count >= self.consistency_threshold:
+                consistent.append(alert)
+            else:
+                 print(f"[DEBUG] Dropped INCONSISTENT Alert: {alert['track_id']} ({count}/{self.consistency_threshold} frames)")
+        
+        return consistent
 
     def reset(self):
         self.state_history.clear()
