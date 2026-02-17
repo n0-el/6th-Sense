@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🏍️ Smart Motorcycle Helmet Blind Spot Detection System
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -424,3 +425,6 @@ See `docs/BENCHMARKS.md` for detailed performance comparisons across different h
 **Built with ❤️ for safer riding**
 
 🏍️ Ride safe, stay aware! 🏍️
+=======
+# 6th-Sense
+>>>>>>> aa81386e13ba28aa85343318da19677afe52d32b
